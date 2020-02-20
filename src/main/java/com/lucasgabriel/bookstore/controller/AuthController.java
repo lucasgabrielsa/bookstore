@@ -1,4 +1,4 @@
-package com.lucasgabriel.bookstore;
+package com.lucasgabriel.bookstore.controller;
 
 import com.lucasgabriel.bookstore.exception.AppException;
 import com.lucasgabriel.bookstore.model.Role;
