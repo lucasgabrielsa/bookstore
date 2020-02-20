@@ -1,17 +1,19 @@
 package com.lucasgabriel.bookstore.controller;
 
 import com.lucasgabriel.bookstore.exception.AppException;
+import com.lucasgabriel.bookstore.exception.BadRequestException;
+import com.lucasgabriel.bookstore.model.JwtRefreshToken;
 import com.lucasgabriel.bookstore.model.Role;
 import com.lucasgabriel.bookstore.model.RoleName;
 import com.lucasgabriel.bookstore.model.User;
-import com.lucasgabriel.bookstore.payload.ApiResponse;
-import com.lucasgabriel.bookstore.payload.JwtAuthenticationResponse;
-import com.lucasgabriel.bookstore.payload.LoginRequest;
-import com.lucasgabriel.bookstore.payload.SignUpRequest;
+import com.lucasgabriel.bookstore.payload.*;
+import com.lucasgabriel.bookstore.repository.RefreshTokenRepository;
 import com.lucasgabriel.bookstore.repository.RoleRepository;
 import com.lucasgabriel.bookstore.repository.UserRepository;
 import com.lucasgabriel.bookstore.security.JwtTokenProvider;
+import com.lucasgabriel.bookstore.security.UserPrincipal;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -27,6 +29,8 @@ import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import javax.validation.Valid;
 import java.net.URI;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Collections;
 
 @RestController
@@ -48,6 +52,12 @@ public class AuthController {
     @Autowired
     JwtTokenProvider tokenProvider;
 
+    @Autowired
+    RefreshTokenRepository refreshTokenRepository;
+
+    @Value("${app.jwtExpirationInMs}")
+    private long jwtExpirationInMs;
+
     @PostMapping("/signin")
     public ResponseEntity<?> authenticateUser(@Valid @RequestBody LoginRequest loginRequest) {
 
@@ -60,8 +70,14 @@ public class AuthController {
 
         SecurityContextHolder.getContext().setAuthentication(authentication);
 
-        String jwt = tokenProvider.generateToken(authentication);
-        return ResponseEntity.ok(new JwtAuthenticationResponse(jwt));
+        UserPrincipal userPrincipal = (UserPrincipal) authentication.getPrincipal();
+
+        String accessToken  = tokenProvider.generateToken(userPrincipal);
+        String refreshToken = tokenProvider.generateRefreshToken();
+
+        saveRefreshToken(userPrincipal, refreshToken);
+
+        return ResponseEntity.ok(new JwtAuthenticationResponse(accessToken, refreshToken, jwtExpirationInMs));
     }
 
     @PostMapping("/signup")
@@ -94,5 +110,26 @@ public class AuthController {
                 .buildAndExpand(result.getUsername()).toUri();
 
         return ResponseEntity.created(location).body(new ApiResponse(true, "User registered successfully"));
+    }
+
+    @PostMapping("/refreshToken")
+    public ResponseEntity<?> refreshAccessToken(@Valid @RequestBody RefreshTokenRequest refreshTokenRequest) {
+        return refreshTokenRepository.findById(refreshTokenRequest.getRefreshToken()).map(jwtRefreshToken -> {
+            User user = jwtRefreshToken.getUser();
+            String accessToken = tokenProvider.generateToken(UserPrincipal.create(user));
+            return ResponseEntity.ok(new JwtAuthenticationResponse(accessToken, jwtRefreshToken.getToken(), jwtExpirationInMs));
+        }).orElseThrow(() -> new BadRequestException("Invalid Refresh Token"));
+    }
+
+    private void saveRefreshToken(UserPrincipal userPrincipal, String refreshToken) {
+        // Persist Refresh Token
+
+        JwtRefreshToken jwtRefreshToken = new JwtRefreshToken(refreshToken);
+        jwtRefreshToken.setUser(userRepository.getOne(userPrincipal.getId()));
+
+        Instant expirationDateTime = Instant.now().plus(360, ChronoUnit.DAYS);  // Todo Add this in application.properties
+        jwtRefreshToken.setExpirationDateTime(expirationDateTime);
+
+        refreshTokenRepository.save(jwtRefreshToken);
     }
 }
